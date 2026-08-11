@@ -7,7 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Minimal runtime libs often needed by scientific/binary wheels on slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -17,8 +16,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY extract_pdf.py .
 COPY app ./app
-COPY start.sh ./start.sh
-RUN chmod +x /app/start.sh
+COPY run.py .
 
 ENV MAX_CONCURRENT_JOBS=8 \
     MAX_UPLOAD_MB=25 \
@@ -27,5 +25,6 @@ ENV MAX_CONCURRENT_JOBS=8 \
 
 EXPOSE 8000
 
-# Railway injects $PORT — start.sh reads it
-CMD ["/app/start.sh"]
+# Do NOT pass ${PORT} through shell/exec — Railway may not expand it.
+# run.py reads PORT from the environment as an integer.
+CMD ["python", "run.py"]

@@ -521,8 +521,12 @@ MAX_CONCURRENT_JOBS=8
 TITLE_MAX_PAGES=2
 ```
 
-3. Deploy → copy public URL into Next.js `PDF_API_URL`.
-4. Healthcheck path is `/health` (configured in `railway.toml`).
+3. **Important:** In Railway → Service → Settings → Deploy, clear any custom
+   **Start Command**. Let the Dockerfile `CMD ["python", "run.py"]` run.
+   Do **not** set something like `uvicorn ... --port ${PORT:-8000}` — Railway
+   will pass that literally and crash with `Invalid value for '--port'`.
+4. Deploy → copy public URL into Next.js `PDF_API_URL`.
+5. Healthcheck path is `/health` (configured in `railway.toml`).
 
 Local smoke test against Railway:
 
