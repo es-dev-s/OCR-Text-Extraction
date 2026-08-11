@@ -25,11 +25,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 
 # Load .env from project root (local). Railway injects vars directly.
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+try:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 
-from extract_pdf import extract_document_title_bytes, extract_pdf_bytes
-
-# Tunables via env (Railway-friendly)
 MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "25"))
 MAX_UPLOAD_BYTES = int(MAX_UPLOAD_MB * 1024 * 1024)
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "8"))
@@ -47,10 +47,31 @@ _job_semaphore: asyncio.Semaphore | None = None
 _active_jobs = 0
 _active_lock: asyncio.Lock | None = None
 _started_at = time.time()
+_extract_ready = False
+_extract_error: str | None = None
+
+
+def _load_extractors():
+    """Import PyMuPDF extractors lazily so /health boots fast on Railway."""
+    from extract_pdf import extract_document_title_bytes, extract_pdf_bytes
+
+    return extract_document_title_bytes, extract_pdf_bytes
+
+
+def _extractors():
+    global _extract_ready, _extract_error
+    try:
+        extract_document_title_bytes, extract_pdf_bytes = _load_extractors()
+        _extract_ready = True
+        _extract_error = None
+        return extract_document_title_bytes, extract_pdf_bytes
+    except Exception as exc:
+        _extract_ready = False
+        _extract_error = str(exc)
+        raise
 
 
 def _ensure_runtime() -> tuple[asyncio.Semaphore, asyncio.Lock]:
-    """Lazy-init concurrency primitives (safe for tests + lifespan)."""
     global _job_semaphore, _active_lock
     if _job_semaphore is None:
         _job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
@@ -59,9 +80,28 @@ def _ensure_runtime() -> tuple[asyncio.Semaphore, asyncio.Lock]:
     return _job_semaphore, _active_lock
 
 
+async def _warmup_extractors() -> None:
+    global _extract_ready, _extract_error
+    try:
+        await asyncio.to_thread(_load_extractors)
+        _extract_ready = True
+        _extract_error = None
+        print("pdf extractors ready", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        _extract_ready = False
+        _extract_error = str(exc)
+        print(f"pdf extractor warmup failed: {exc}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _ensure_runtime()
+    # Do not block /health on PyMuPDF import
+    asyncio.create_task(_warmup_extractors())
+    print(
+        f"pdf-extract-api started api_key_required={bool(API_KEY)} port={os.getenv('PORT', '8000')}",
+        flush=True,
+    )
     yield
 
 
@@ -78,7 +118,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if CORS_ORIGINS == ["*"] else CORS_ORIGINS,
-    # Browsers reject allow_credentials=True with origin "*"
     allow_credentials=CORS_ORIGINS != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,7 +125,6 @@ app.add_middleware(
 
 
 async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    # Use module-level API_KEY (loaded from .env / Railway env at startup).
     expected = (API_KEY or "").strip()
     if not expected:
         return
@@ -141,7 +179,6 @@ async def _read_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
 
 
 async def _run_job(fn, *args, **kwargs) -> Any:
-    """Run CPU-bound PyMuPDF work off the event loop with concurrency cap."""
     sem, _ = _ensure_runtime()
     async with sem:
         await _track(1)
@@ -209,6 +246,8 @@ async def health() -> dict[str, Any]:
         "max_concurrent_jobs": MAX_CONCURRENT_JOBS,
         "max_upload_mb": MAX_UPLOAD_MB,
         "api_key_required": bool(API_KEY),
+        "extractors_ready": _extract_ready,
+        "extractors_error": _extract_error,
     }
 
 
@@ -234,10 +273,10 @@ async def detect_title(
     file: UploadFile = File(...),
     title_max_pages: int = Form(default=TITLE_MAX_PAGES),
 ) -> dict[str, Any]:
-    """Fast path: detect PDF title from page 1→2 only."""
     request_id = uuid.uuid4().hex[:12]
     filename, data = await _read_pdf_upload(file)
     pages = max(1, min(int(title_max_pages), 5))
+    extract_document_title_bytes, _ = _extractors()
 
     try:
         result = await _run_job(
@@ -262,10 +301,10 @@ async def extract(
     include_full_text: bool = Form(default=False),
     title_max_pages: int = Form(default=TITLE_MAX_PAGES),
 ) -> dict[str, Any]:
-    """Full embedded-text extract + per-page titles (no OCR)."""
     request_id = uuid.uuid4().hex[:12]
     filename, data = await _read_pdf_upload(file)
     pages = max(1, min(int(title_max_pages), 5))
+    _, extract_pdf_bytes = _extractors()
 
     try:
         result = await _run_job(
@@ -296,6 +335,7 @@ async def _process_one_title(
     request_id = uuid.uuid4().hex[:12]
     try:
         filename, data = await _read_pdf_upload(file)
+        extract_document_title_bytes, _ = _extractors()
         result = await _run_job(
             extract_document_title_bytes,
             data,
@@ -331,6 +371,7 @@ async def _process_one_extract(
     request_id = uuid.uuid4().hex[:12]
     try:
         filename, data = await _read_pdf_upload(file)
+        _, extract_pdf_bytes = _extractors()
         result = await _run_job(
             extract_pdf_bytes,
             data,
@@ -367,7 +408,6 @@ async def batch_title(
     files: list[UploadFile] = File(...),
     title_max_pages: int = Form(default=TITLE_MAX_PAGES),
 ) -> dict[str, Any]:
-    """Concurrent title detection for multiple PDFs."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
     if len(files) > 20:
@@ -375,9 +415,7 @@ async def batch_title(
 
     pages = max(1, min(int(title_max_pages), 5))
     t0 = time.perf_counter()
-    results = await asyncio.gather(
-        *[_process_one_title(f, pages) for f in files]
-    )
+    results = await asyncio.gather(*[_process_one_title(f, pages) for f in files])
     ok = sum(1 for r in results if r.get("ok"))
     return {
         "ok": ok == len(results),
@@ -396,7 +434,6 @@ async def batch_extract(
     include_full_text: bool = Form(default=False),
     title_max_pages: int = Form(default=TITLE_MAX_PAGES),
 ) -> dict[str, Any]:
-    """Concurrent full extract for multiple PDFs."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
     if len(files) > 12:
