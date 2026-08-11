@@ -521,12 +521,15 @@ MAX_CONCURRENT_JOBS=8
 TITLE_MAX_PAGES=2
 ```
 
-3. **Important:** In Railway → Service → Settings → Deploy, clear any custom
-   **Start Command**. Let the Dockerfile `CMD ["python", "run.py"]` run.
-   Do **not** set something like `uvicorn ... --port ${PORT:-8000}` — Railway
-   will pass that literally and crash with `Invalid value for '--port'`.
+3. **Critical — Start Command:**
+   - In Railway → Service → Settings → Deploy, **clear/delete** any custom Start Command
+     (especially anything with `uvicorn ... --port ${PORT:-8000}`).
+   - This repo sets `startCommand = "python run.py"` in `railway.toml` / `railway.json`,
+     which overrides the dashboard ([Railway config-as-code](https://docs.railway.com/config-as-code)).
+   - `run.py` reads the `PORT` env var in Python (no shell expansion). Your app **must**
+     listen on `PORT` for healthchecks to pass ([Railway healthchecks](https://docs.railway.com/deployments/healthchecks)).
 4. Deploy → copy public URL into Next.js `PDF_API_URL`.
-5. Healthcheck path is `/health` (configured in `railway.toml`).
+5. Healthcheck path is `/health`.
 
 Local smoke test against Railway:
 
