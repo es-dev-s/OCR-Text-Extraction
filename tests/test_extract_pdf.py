@@ -16,6 +16,7 @@ from extract_pdf import (
 ROOT = Path(__file__).resolve().parents[1]
 DEMO = ROOT / "Demo.pdf"
 OURSIDE = ROOT / "1.Ourside_Mass_transfer.pdf"
+UNIT_OPS = ROOT / "2.Ourside_Unit_operations_of_chemical_engineering_.pdf"
 
 
 def _pdf_bytes_from_pages(pages: list[list[tuple[str, float, bool, float]]]) -> bytes:
@@ -27,8 +28,6 @@ def _pdf_bytes_from_pages(pages: list[list[tuple[str, float, bool, float]]]) -> 
     for page_lines in pages:
         page = doc.new_page()
         for text, size, bold, y in page_lines:
-            # PyMuPDF insert_text doesn't reliably set bold via fontname on all builds;
-            # use fontfile-less fontname hint.
             font = "helv" if not bold else "hebo"
             page.insert_text((72, y), text, fontsize=size, fontname=font)
     data = doc.tobytes()
@@ -39,12 +38,21 @@ def _pdf_bytes_from_pages(pages: list[list[tuple[str, float, bool, float]]]) -> 
 def test_cover_noise_filters_location_and_roles():
     assert _is_cover_noise("Stockholm, Sweden")
     assert _is_cover_noise("KTH Royal Institute of Technology")
+    assert _is_cover_noise("National Institute of Technology")
+    assert _is_cover_noise("National Institute of Technology Rourkela May 2015")
     assert _is_cover_noise("Master of Science Thesis")
+    assert _is_cover_noise("Project Report")
+    assert _is_cover_noise("Submitted by")
+    assert _is_cover_noise("Rourkela")
+    assert _is_cover_noise("May 2015")
     assert _is_cover_noise("Student: Ibrahim Abidemi Lawal")
     assert _is_cover_noise("June 10, 2024")
     assert _is_cover_noise("Abstract")
     assert not _is_cover_noise(
         "Analyzing CO2 Capture Using Sodium Hydroxide in a Spray Column"
+    )
+    assert not _is_cover_noise(
+        "Steady state simulation of Extractive Distillation system using Aspen Plus"
     )
 
 
@@ -64,7 +72,7 @@ def test_title_first_page_wins():
 def test_title_falls_back_when_page1_empty():
     data = _pdf_bytes_from_pages(
         [
-            [],  # empty page 1
+            [],
             [("Fallback Document Title", 26, True, 90)],
         ]
     )
@@ -80,10 +88,20 @@ def test_title_skips_cover_noise_for_thesis_like_page():
         [
             [
                 ("KTH Royal Institute of Technology", 16, False, 80),
-                ("Stockholm, Sweden", 16, True, 110),
+                ("Stockholm, Sweden", 16, False, 110),
                 ("Master of Science Thesis", 16, True, 200),
-                ("Analyzing CO2 Capture Using Sodium Hydroxide in a Spray Column:", 14, True, 300),
-                ("Operational Influences on Absorption Efficiency and Regeneration", 14, True, 320),
+                (
+                    "Analyzing CO2 Capture Using Sodium Hydroxide in a Spray Column:",
+                    18,
+                    True,
+                    300,
+                ),
+                (
+                    "Operational Influences on Absorption Efficiency and Regeneration",
+                    18,
+                    True,
+                    325,
+                ),
                 ("Student: Someone", 12, True, 420),
                 ("June 10, 2024", 12, False, 500),
             ]
@@ -94,6 +112,35 @@ def test_title_skips_cover_noise_for_thesis_like_page():
     assert "Analyzing CO2 Capture" in title
     assert "Stockholm" not in title
     assert "Master of Science" not in title
+
+
+def test_project_report_cover_prefers_work_title_not_institute():
+    """NIT-style project report: On + largest title, not footer institute/date."""
+    data = _pdf_bytes_from_pages(
+        [
+            [
+                ("A", 14, False, 70),
+                ("Project Report", 14, False, 95),
+                ("On", 14, False, 120),
+                ("Steady state simulation of Extractive", 20, False, 150),
+                ("Distillation system using Aspen Plus", 20, False, 185),
+                ("Submitted by", 14, False, 250),
+                ("Pritam Kumar Bala", 14, False, 295),
+                ("Bachelor of Technology in Chemical Engineering", 14, False, 390),
+                ("Department of Chemical Engineering", 18, False, 620),
+                ("National Institute of Technology", 18, False, 655),
+                ("Rourkela", 18, False, 690),
+                ("May 2015", 18, False, 725),
+            ]
+        ]
+    )
+    result = extract_document_title_bytes(data, source="unitops.pdf")
+    title = result["document_title"] or ""
+    assert "Steady state simulation of Extractive" in title
+    assert "Aspen Plus" in title
+    assert "National Institute" not in title
+    assert "Rourkela" not in title
+    assert "May 2015" not in title
 
 
 def test_extract_bytes_returns_text_and_page_titles():
@@ -126,6 +173,16 @@ def test_real_ourside_pdf_title():
     assert result["document_title"] == (
         "Analyzing CO2 Capture Using Sodium Hydroxide in a Spray Column: "
         "Operational Influences on Absorption Efficiency and Regeneration"
+    )
+    assert result["document_title_page"] == 1
+
+
+@pytest.mark.skipif(not UNIT_OPS.exists(), reason="Unit ops PDF not present")
+def test_real_unit_ops_project_report_title():
+    result = extract_document_title_bytes(UNIT_OPS.read_bytes(), source="unitops.pdf")
+    title = result["document_title"] or ""
+    assert title == (
+        "Steady state simulation of Extractive Distillation system using Aspen Plus"
     )
     assert result["document_title_page"] == 1
 

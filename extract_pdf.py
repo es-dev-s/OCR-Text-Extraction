@@ -95,12 +95,19 @@ _TRAILING_FRAG = {
 # Cover-page noise: institutions, places, roles, thesis boilerplate — not the work title
 _COVER_NOISE_RE = re.compile(
     r"(?ix)^(?:"
-    r"(?:kth|royal\s+institute|university|department|school|faculty|college|institute)\b.*"
-    r"|master\s+of\s+science(?:\s+thesis)?"
-    r"|bachelor\s+of\s+science(?:\s+thesis)?"
-    r"|doctoral\s+thesis|phd\s+thesis|dissertation"
+    r"(?:kth|royal\s+institute(?:\s+of\s+technology)?|university|department|school|"
+    r"faculty|college|institute)\b.*"
+    r"|(?:national\s+)?institute\s+of\s+technology\b.*"
+    r"|master\s+of\s+(?:science|technology|engineering)(?:\s+thesis)?"
+    r"|bachelor\s+of\s+(?:science|technology|engineering).*"
+    r"|doctoral\s+thesis|phd\s+thesis|dissertation|project\s*reports?"
+    r"|a\s+project\s+report|projectreport"
+    r"|submitted\s*by|submittedby|under\s+the\s+guidance\s+of|undertheguidanceof"
+    r"|in\s+partial\s+fulfil+l?ment.*"
+    r"|roll\s*no\.?\s*:?.*"
     r"|student\s*:.*|examiner\s*:.*|supervisor\s*:.*|author\s*:.*"
     r"|associate\s+professor|postdoctoral\s+researcher|professor\b.*"
+    r"|dr\.?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}"  # advisor name lines
     r"|abstract|acknowledgements?|table\s+of\s+contents|contents"
     r"|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
     r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
@@ -113,6 +120,38 @@ _COVER_NOISE_RE = re.compile(
 
 _LOCATION_RE = re.compile(
     r"(?ix)^[A-Z][A-Za-z .'-]+,\s*[A-Z][A-Za-z .'-]+$"
+)
+
+_INSTITUTION_IN_TEXT_RE = re.compile(
+    r"(?ix)(?:"
+    r"(?:national\s+)?institute\s+of\s+technology"
+    r"|\buniversity\b|\bdepartment\s+of\b|\bfaculty\s+of\b"
+    r"|\broyal\s+institute\b|\bcollege\s+of\b"
+    r")"
+)
+
+_DATE_RE = re.compile(
+    r"(?ix)^(?:"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\s+\d{1,2},?\s+\d{4}"
+    r"|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\s+\d{4}"
+    r"|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\s+\d{4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r")$"
+)
+
+_TITLE_LABEL_RE = re.compile(
+    r"(?ix)^(?:a|on|title|project\s*reports?|thesis|dissertation)$"
+)
+
+_SINGLE_PLACE_RE = re.compile(
+    r"(?ix)^(?:rourkela|stockholm|sweden|india|delhi|mumbai|chennai|kolkata|"
+    r"bangalore|bengaluru|hyderabad|london|new\s+york)$"
 )
 
 
@@ -129,33 +168,31 @@ def _heading_case(text: str) -> bool:
     return bool(letters) and (sum(c.isupper() for c in letters) / len(letters) >= 0.75)
 
 
-_DATE_RE = re.compile(
-    r"(?ix)^(?:"
-    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
-    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    r"\s+\d{1,2},?\s+\d{4}"
-    r"|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    r"\s+\d{4}"
-    r"|\d{4}-\d{2}-\d{2}"
-    r")$"
-)
-
-
 def _is_cover_noise(text: str) -> bool:
     t = _norm(text)
     if not t:
+        return True
+    if len(t) <= 2 and t.lower() in {"a", "on", "by", "of", "to"}:
         return True
     if _COVER_NOISE_RE.match(t):
         return True
     if _DATE_RE.match(t):
         return True
+    if _SINGLE_PLACE_RE.match(t):
+        return True
     if _LOCATION_RE.match(t) and len(t.split()) <= 5:
+        return True
+    if _INSTITUTION_IN_TEXT_RE.search(t) and len(t.split()) <= 12:
         return True
     # Role lines often contain a colon label
     if re.match(
-        r"(?i)^(student|examiner|supervisor|author|advisor|date|course)\s*:",
+        r"(?i)^(student|examiner|supervisor|author|advisor|date|course|submitted)\s*:",
         t,
+    ):
+        return True
+    # Pure month+year already covered; reject trailing year-only institution blocks
+    if re.search(r"(?i)\b(?:institute|university|department|college)\b", t) and re.search(
+        r"\b(?:19|20)\d{2}\b", t
     ):
         return True
     return False
@@ -210,10 +247,12 @@ def _is_plausible_document_title(text: str) -> bool:
         return False
     if not t[0].isalnum() or (t[0].isalpha() and not t[0].isupper()):
         return False
-    # Prefer title-ish casing, but allow mixed scientific titles
+    # Title Case / ALL CAPS preferred, but sentence-case thesis titles are common
     if not _heading_case(t):
         caps = sum(1 for w in words if w[:1].isupper())
-        if caps / max(len(words), 1) < 0.4:
+        if len(words) >= 5 and caps >= 1:
+            return True
+        if caps / max(len(words), 1) < 0.35:
             return False
     return True
 
@@ -334,8 +373,8 @@ def detect_cover_document_title(
 ) -> dict[str, Any] | None:
     """Pick the real work title on thesis/report cover pages.
 
-    Prefers substantive bold/title clusters in the mid-page band over
-    institution headers, locations, and role lines.
+    Prefers the largest substantive text cluster in the upper/mid title zone,
+    especially text that follows labels like "On" / "Project Report".
     """
     usable = [
         ln
@@ -348,16 +387,22 @@ def detect_cover_document_title(
         return None
 
     body = _body_size(lines)
-    # Candidate seed lines: bold or larger than body
+    max_size = max(ln["size"] for ln in usable)
+
+    # Y positions of thesis labels ("On", "Project Report") to boost following title
+    label_ys = [ln["y1"] for ln in lines if _TITLE_LABEL_RE.match(_norm(ln["text"]))]
+
     seeds = [
         ln
         for ln in usable
-        if ln["bold"] or ln["size"] >= body + 1.0 or ln["size"] >= body * 1.12
+        if ln["bold"]
+        or ln["size"] >= body + 1.0
+        or ln["size"] >= body * 1.12
+        or ln["size"] >= max_size - 0.5
     ]
     if not seeds:
         seeds = usable
 
-    # Build merged clusters from seeds + nearby similar lines
     clusters: list[dict[str, Any]] = []
     used: set[int] = set()
     indexed = list(enumerate(usable))
@@ -366,7 +411,7 @@ def detect_cover_document_title(
         if i in used:
             continue
         if seed not in seeds and not (
-            seed["bold"] or seed["size"] >= body * 1.1
+            seed["bold"] or seed["size"] >= body * 1.1 or seed["size"] >= max_size - 0.5
         ):
             continue
 
@@ -377,13 +422,12 @@ def detect_cover_document_title(
         for j, nxt in indexed[i + 1 :]:
             if j in used:
                 continue
-            if abs(nxt["y0"] - y1) > max(14.0, size_ref * 1.2):
-                if nxt["y0"] > y1 + max(18.0, size_ref * 1.5):
+            if abs(nxt["y0"] - y1) > max(16.0, size_ref * 1.35):
+                if nxt["y0"] > y1 + max(22.0, size_ref * 1.6):
                     break
                 continue
-            if abs(nxt["size"] - size_ref) > 2.0:
+            if abs(nxt["size"] - size_ref) > 2.5:
                 continue
-            # Keep stacking title/subtitle lines
             if _is_cover_noise(nxt["text"]):
                 break
             group.append(nxt)
@@ -399,31 +443,50 @@ def detect_cover_document_title(
 
         words = text.split()
         y0 = group[0]["y0"]
+        size = max(g["size"] for g in group)
         score = 0.0
+
         if any(g["bold"] for g in group):
             score += 3.0
-        score += min(4.0, max(0.0, (max(g["size"] for g in group) - body)) * 0.9)
-        # Prefer mid-page research titles over header band
-        if page_height * 0.28 <= y0 <= page_height * 0.72:
+
+        # Strongly prefer the visually largest text on the cover
+        score += min(5.0, max(0.0, (size - body)) * 1.15)
+        if size >= max_size - 0.25:
+            score += 3.0
+        elif size < max_size - 2.0:
+            score -= 2.0
+
+        # Thesis titles usually sit in upper/mid band — not the footer
+        if page_height * 0.12 <= y0 <= page_height * 0.62:
             score += 3.5
-        elif y0 < page_height * 0.22:
-            score -= 1.5
-        # Prefer longer substantive titles
+        elif y0 > page_height * 0.70:
+            score -= 4.0  # institute / date footer blocks
+        elif y0 < page_height * 0.10:
+            score -= 0.5
+
+        # Text right after "On" / "Project Report" is almost always the title
+        if any(0 <= (y0 - ly) <= 90 for ly in label_ys):
+            score += 4.0
+
         if 6 <= len(words) <= 24:
             score += 3.0
-        elif 3 <= len(words) <= 5:
-            score += 0.5
+        elif 4 <= len(words) <= 5:
+            score += 1.5
+        elif len(words) <= 3:
+            score -= 2.5
+
         if ":" in text:
             score += 1.0
-        # Very short phrases are rarely the document title on a cover
-        if len(words) <= 3:
+
+        # Person-name shaped clusters (2-4 Title Case tokens) are weak titles
+        if 2 <= len(words) <= 4 and _heading_case(text) and size <= body + 2:
             score -= 2.0
 
         clusters.append(
             {
                 "text": text,
                 "score": round(score, 2),
-                "size": max(g["size"] for g in group),
+                "size": size,
                 "bold": any(g["bold"] for g in group),
                 "y0": y0,
                 "y1": group[-1]["y1"],
@@ -433,11 +496,14 @@ def detect_cover_document_title(
     if not clusters:
         return None
 
-    best = max(clusters, key=lambda c: (c["score"], len(c["text"].split()), -c["y0"]))
+    best = max(
+        clusters,
+        key=lambda c: (c["score"], c["size"], len(c["text"].split()), -c["y0"]),
+    )
     if best["score"] < 3.0:
         return None
 
-    confidence = round(min(1.0, max(0.0, (best["score"] - 2.0) / 8.0)), 3)
+    confidence = round(min(1.0, max(0.0, (best["score"] - 2.0) / 10.0)), 3)
     return {
         "page_title": best["text"],
         "page_title_confidence": confidence,
@@ -453,6 +519,39 @@ def detect_cover_document_title(
         ],
         "body_font_size": round(body, 2),
     }
+
+
+def _candidate_font_size(candidate: dict[str, Any] | None) -> float:
+    if not candidate:
+        return 0.0
+    heads = candidate.get("headings") or []
+    if heads and heads[0].get("font_size"):
+        return float(heads[0]["font_size"])
+    return 0.0
+
+
+def _pick_best_title_candidate(
+    *candidates: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Choose among detectors by font size, confidence, and substance — not word-count hacks."""
+    opts = [c for c in candidates if c and c.get("page_title")]
+    if not opts:
+        return None
+
+    def rank(c: dict[str, Any]) -> tuple:
+        title = c["page_title"]
+        words = len(title.split())
+        font = _candidate_font_size(c)
+        conf = float(c.get("page_title_confidence") or 0.0)
+        score = 0.0
+        if c.get("headings"):
+            score = float(c["headings"][0].get("score") or 0.0)
+        # Reject leftover institution-ish strings hard
+        noise_pen = 5.0 if _is_cover_noise(title) else 0.0
+        substantive = 1 if 5 <= words <= 28 else 0
+        return (font - noise_pen, score, conf, substantive, words)
+
+    return max(opts, key=rank)
 
 
 def detect_page_titles(
@@ -621,26 +720,10 @@ def peek_page_title(page: pymupdf.Page) -> dict[str, Any]:
             "char_count": len(text),
         }
 
-    # Cover/thesis pages: prefer substantive mid-page title over institution/location
     cover = detect_cover_document_title(lines, page.rect.height)
     info = detect_page_titles(lines, page.rect.height)
-
-    chosen = None
-    if cover and cover.get("page_title"):
-        # Prefer cover title when it is clearly more document-like
-        cover_words = len(cover["page_title"].split())
-        page_words = len((info.get("page_title") or "").split())
-        if (
-            not info.get("page_title")
-            or cover_words >= 6
-            or cover.get("page_title_confidence", 0) >= info.get("page_title_confidence", 0)
-            or cover_words > page_words + 2
-        ):
-            chosen = cover
-    if chosen is None:
-        chosen = info if info.get("page_title") else None
-    if chosen is None:
-        chosen = _largest_font_title(lines, page.rect.height)
+    largest = _largest_font_title(lines, page.rect.height)
+    chosen = _pick_best_title_candidate(cover, info, largest)
 
     if not chosen:
         chosen = {
@@ -782,23 +865,15 @@ def extract_page(page: pymupdf.Page) -> dict[str, Any]:
     text = page.get_text("text", sort=True).rstrip()
     lines = _line_objects(page)
     cover = detect_cover_document_title(lines, page.rect.height)
-    title_info = detect_page_titles(lines, page.rect.height)
-    if cover and cover.get("page_title"):
-        cover_words = len(cover["page_title"].split())
-        page_title = title_info.get("page_title")
-        page_words = len((page_title or "").split())
-        if (
-            not page_title
-            or cover_words >= 6
-            or cover.get("page_title_confidence", 0)
-            >= title_info.get("page_title_confidence", 0)
-            or cover_words > page_words + 2
-        ):
-            title_info = cover
-    if not title_info.get("page_title"):
-        largest = _largest_font_title(lines, page.rect.height)
-        if largest:
-            title_info = largest
+    info = detect_page_titles(lines, page.rect.height)
+    largest = _largest_font_title(lines, page.rect.height)
+    title_info = _pick_best_title_candidate(cover, info, largest) or {
+        "page_title": None,
+        "page_title_confidence": 0.0,
+        "title_source": "none",
+        "headings": [],
+        "body_font_size": None,
+    }
 
     tables: list[dict[str, Any]] = []
     try:
