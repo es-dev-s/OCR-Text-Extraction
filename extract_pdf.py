@@ -154,6 +154,24 @@ _SINGLE_PLACE_RE = re.compile(
     r"bangalore|bengaluru|hyderabad|london|new\s+york)$"
 )
 
+# Contact / publisher chrome — never a document title
+_CONTACT_RE = re.compile(
+    r"(?ix)(?:"
+    r"\b(?:tel|fax|phone|email|e-?mail)\b\.?\s*:"
+    r"|@"
+    r"|https?://"
+    r"|www\."
+    r"|\bdoi\s*:"
+    r"|version\s+of\s+record"
+    r"|corresponding\s+author"
+    r"|manuscript_[0-9a-f]+"
+    r")"
+)
+
+# City, ST, Country affiliation lines
+_CITY_STATE_RE = re.compile(
+    r"(?ix)^[A-Za-z .'-]+,\s*[A-Z]{2}\b(?:,?\s*(?:USA|U\.S\.A\.|UK|Canada|India))?\.?$"
+)
 
 def _heading_case(text: str) -> bool:
     """True for Title Case / ALL CAPS style headings."""
@@ -168,11 +186,49 @@ def _heading_case(text: str) -> bool:
     return bool(letters) and (sum(c.isupper() for c in letters) / len(letters) >= 0.75)
 
 
+def _is_contact_or_chrome(text: str) -> bool:
+    """Emails, phones, DOIs, publisher headers — not titles."""
+    t = _norm(text)
+    if not t:
+        return True
+    if _CONTACT_RE.search(t):
+        return True
+    if _CITY_STATE_RE.match(t):
+        return True
+    # Bare affiliation superscripts left after author wrap, e.g. "Mohammad2"
+    if re.fullmatch(r"[A-Za-z'’\-]+\d+", t) and len(t) <= 24:
+        return True
+    return False
+
+
+def _is_author_line(text: str) -> bool:
+    """Heuristic for paper author lists (often sit directly under the title).
+
+    Keep this intentionally simple — complex author regexes can catastrophic-backtrack
+    on long abstract sentences. Avoid matching chemical formulas like CO2 / H2.
+    """
+    t = _norm(text)
+    if not t or len(t) < 5 or len(t) > 180:
+        return False
+    if _is_contact_or_chrome(t):
+        return True
+    # Surname + affiliation marker: Planas1 / Atiyeh1,* (requires lowercase in name)
+    if re.search(r"\b[A-Z][a-z][A-Za-z'’\-]*\d(?:[\s,*]|$)", t):
+        commas = t.count(",")
+        if commas >= 1 or " and " in t.lower():
+            return True
+        if len(t.split()) <= 4:
+            return True
+    return False
+
+
 def _is_cover_noise(text: str) -> bool:
     t = _norm(text)
     if not t:
         return True
     if len(t) <= 2 and t.lower() in {"a", "on", "by", "of", "to"}:
+        return True
+    if _is_contact_or_chrome(t):
         return True
     if _COVER_NOISE_RE.match(t):
         return True
@@ -234,7 +290,7 @@ def _is_plausible_document_title(text: str) -> bool:
     t = _norm(text)
     if len(t) < 8:
         return False
-    if _is_cover_noise(t):
+    if _is_cover_noise(t) or _is_author_line(t) or _is_contact_or_chrome(t):
         return False
     if t[0] in "\"'“‘":
         return False
@@ -381,6 +437,7 @@ def detect_cover_document_title(
         for ln in lines
         if not _looks_like_footer(ln["text"], ln["y0"], page_height)
         and not _is_cover_noise(ln["text"])
+        and not _is_author_line(ln["text"])
         and len(ln["text"]) >= 3
     ]
     if not usable:
@@ -428,7 +485,7 @@ def detect_cover_document_title(
                 continue
             if abs(nxt["size"] - size_ref) > 2.5:
                 continue
-            if _is_cover_noise(nxt["text"]):
+            if _is_cover_noise(nxt["text"]) or _is_author_line(nxt["text"]):
                 break
             group.append(nxt)
             used.add(j)
@@ -475,12 +532,17 @@ def detect_cover_document_title(
         elif len(words) <= 3:
             score -= 2.5
 
-        if ":" in text:
+        # Colon can mark a real subtitle — but not Tel:/Email:/DOI: chrome
+        if ":" in text and not _CONTACT_RE.search(text):
             score += 1.0
 
         # Person-name shaped clusters (2-4 Title Case tokens) are weak titles
         if 2 <= len(words) <= 4 and _heading_case(text) and size <= body + 2:
             score -= 2.0
+
+        # Reject leftover author/contact chrome if it slipped through
+        if _is_author_line(text) or _is_contact_or_chrome(text):
+            score -= 8.0
 
         clusters.append(
             {

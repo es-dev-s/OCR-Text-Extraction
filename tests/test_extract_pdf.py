@@ -17,6 +17,38 @@ ROOT = Path(__file__).resolve().parents[1]
 DEMO = ROOT / "Demo.pdf"
 OURSIDE = ROOT / "1.Ourside_Mass_transfer.pdf"
 UNIT_OPS = ROOT / "2.Ourside_Unit_operations_of_chemical_engineering_.pdf"
+PDF_DIR = ROOT / "PDF"
+
+# Expected titles for local PDF/ corpus (validated against cover page text)
+PDF_DIR_EXPECTED = {
+    "1-Our-Process_modelling_and_simulation.pdf": (
+        "Simulation of the Extractive Distillation using Ethylene Glycol as an "
+        "Entrainer in the Bioethanol Dehydration"
+    ),
+    "1.Our.Transport_Phenomena.pdf": (
+        "A Study on Supported Liquid Membrane for Selective Separation of Cr(VI)"
+    ),
+    "2-Our-Mas_trasnfer_III.pdf": (
+        "Absorption Characteristics of Ammonia-Water System in the Cylindrical Tube Absorber"
+    ),
+    "2.Our.Project_7th_sem.pdf": (
+        "Process Simulation of Ethanol Production from Biomass Gasification and "
+        "Syngas Fermentation"
+    ),
+    "2.Ourside_Unit_operations_of_chemical_engineering_.pdf": (
+        "Steady state simulation of Extractive Distillation system using Aspen Plus"
+    ),
+    "3-Our-Plant_design_project.pdf": (
+        "Process Integration Approach to the Methanol (MeOH) Production Variability "
+        "from Syngas and Industrial Waste Gases"
+    ),
+    "3.Our.Project_8th_sem.pdf": (
+        "Steady state simulation of Plug Flow Reactor (PFR) in Aspen plus"
+    ),
+    "3.Ourside_Final_year_project_II.pdf": (
+        "OPTIMIZATION ON ACRYLIC ACID PLANT BY USING ASPEN PLUS"
+    ),
+}
 
 
 def _pdf_bytes_from_pages(pages: list[list[tuple[str, float, bool, float]]]) -> bytes:
@@ -48,11 +80,21 @@ def test_cover_noise_filters_location_and_roles():
     assert _is_cover_noise("Student: Ibrahim Abidemi Lawal")
     assert _is_cover_noise("June 10, 2024")
     assert _is_cover_noise("Abstract")
+    assert _is_cover_noise(
+        "Tel.: +1.405.744.8397; Fax: +1.405.744.6059. Email address: hasan.atiyeh@okstate.edu"
+    )
+    assert _is_cover_noise(
+        "Version of Record: https://www.sciencedirect.com/science/article/pii/S0960852417315079"
+    )
+    assert _is_cover_noise("Stillwater, OK, USA")
     assert not _is_cover_noise(
         "Analyzing CO2 Capture Using Sodium Hydroxide in a Spray Column"
     )
     assert not _is_cover_noise(
         "Steady state simulation of Extractive Distillation system using Aspen Plus"
+    )
+    assert not _is_cover_noise(
+        "Process Simulation of Ethanol Production from Biomass Gasification and Syngas Fermentation"
     )
 
 
@@ -143,6 +185,57 @@ def test_project_report_cover_prefers_work_title_not_institute():
     assert "May 2015" not in title
 
 
+def test_journal_page_prefers_title_not_contact_email():
+    """Article front matter: title wins over Tel/Fax/Email author chrome."""
+    data = _pdf_bytes_from_pages(
+        [
+            [
+                (
+                    "Process Simulation of Ethanol Production from Biomass Gasification and Syngas",
+                    12,
+                    True,
+                    120,
+                ),
+                ("Fermentation", 12, True, 145),
+                (
+                    "Oscar Pardo-Planas1, Hasan K. Atiyeh1,*, John R. Phillips1, Clint P. Aichele2 and Sayeed",
+                    12,
+                    False,
+                    175,
+                ),
+                ("Mohammad2", 12, False, 200),
+                (
+                    "1 Department of Biosystems and Agricultural Engineering, Oklahoma State University,",
+                    12,
+                    False,
+                    230,
+                ),
+                ("Stillwater, OK, USA", 12, False, 255),
+                (
+                    "Tel.: +1.405.744.8397; Fax: +1.405.744.6059. Email address: hasan.atiyeh@okstate.edu",
+                    12,
+                    False,
+                    310,
+                ),
+                ("Abstract", 12, False, 350),
+                (
+                    "The hybrid gasification-syngas fermentation platform can produce more bioethanol",
+                    12,
+                    False,
+                    380,
+                ),
+            ]
+        ]
+    )
+    result = extract_document_title_bytes(data, source="journal.pdf")
+    title = result["document_title"] or ""
+    assert "Process Simulation of Ethanol Production" in title
+    assert "Fermentation" in title
+    assert "Tel." not in title
+    assert "@" not in title
+    assert "Email" not in title
+
+
 def test_extract_bytes_returns_text_and_page_titles():
     data = _pdf_bytes_from_pages(
         [
@@ -184,6 +277,17 @@ def test_real_unit_ops_project_report_title():
     assert title == (
         "Steady state simulation of Extractive Distillation system using Aspen Plus"
     )
+    assert result["document_title_page"] == 1
+
+
+@pytest.mark.skipif(not PDF_DIR.is_dir(), reason="PDF/ corpus folder not present")
+@pytest.mark.parametrize("filename,expected", sorted(PDF_DIR_EXPECTED.items()))
+def test_pdf_folder_titles(filename: str, expected: str):
+    path = PDF_DIR / filename
+    if not path.exists():
+        pytest.skip(f"{filename} missing from PDF/")
+    result = extract_document_title_bytes(path.read_bytes(), source=filename)
+    assert result["document_title"] == expected
     assert result["document_title_page"] == 1
 
 
